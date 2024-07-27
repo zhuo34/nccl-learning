@@ -1,8 +1,6 @@
 # NCCl 源码解析
 基于 v2.22.3-1。
 
-## Fisrt Stage
-
 ### `ncclGetUniqueId` 函数
 
 ```cpp
@@ -96,7 +94,7 @@ struct ncclCommInitRankAsyncJob {
 }
 ```
 
-`ncclAsyncJob` 会调用 `func(job)`，是否异步与 NCCL group 机制相关（异步即先链入全局链表 `ncclAsyncJobs`），详见之后内容。因此，这里的调用会执行 `ncclCommInitRankFunc`，其中会初始化一些 `ncclComm` 结构中的字段。
+`ncclAsyncJob` 会调用 `func(job)`，是否异步与 NCCL group 机制相关（异步即先链入全局链表 `ncclAsyncJobs`），详见之后内容。因此，这里的调用会执行 `ncclCommInitRankFunc`，其中会初始化一些 `ncclComm` 结构中的字段，具体在 `commAlloc` 函数之中。
 
 
 ### `ncclGroupStart/ncclGroupEnd` 函数
@@ -358,3 +356,48 @@ ncclCommSetAsyncError(comm, ncclInProgress);
 pthread_create(&ncclGroupJobMainPtr->base.thread, NULL, ncclAsyncJobMain, (void*)&ncclGroupJobMainPtr->base);
 ...
 ```
+
+### bootstrap 网络
+bootstrap 网络顾名思义，是为了交换一些基本信息比如地址什么的。
+
+bootstrap 网络的初始化通过 `bootstrapNetInit()`，这个函数只在 `ncclInit()` 调用。按 [nccl 官网的例子](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/examples.html#example-2-one-device-per-process-or-thread)，rank 为 0 的会调用 `ncclGetUniqueId` 从而调用 `ncclInit`，否则走 `ncclCommInitRank -> ncclCommInitRankDev -> ncclInit`。`bootstrapNetInit()` 的作用是获得 bootstrap 网络的地址端口信息，并保存在全局变量 `bootstrapNetIfAddr` 和 `bootstrapNetIfName` 中。`ncclUniqueId` 是一个 128 字节的空间，语义上就是一个 `ncclBootstrapHandle`，里面保存地址信息。调用 `ncclGetUniqueId` 的 root 就通过 MPI 将 root 的 bootstrap 地址传递给其它 node。
+
+```cpp
+struct ncclBootstrapHandle {
+  uint64_t magic;
+  union ncclSocketAddress addr;
+};
+```
+
+在`bootstrapGetUniqueId/ncclCommInitRankDev` 中，对于 `rank=0` 的节点要建立 bootstrap 根，即 `bootstrapCreateRoot` 函数。
+
+```cpp
+ncclResult_t bootstrapCreateRoot(struct ncclBootstrapHandle* handle, bool idFromEnv) {
+  struct ncclSocket* listenSock;
+  struct bootstrapRootArgs* args;
+  pthread_t thread;
+
+  NCCLCHECK(ncclCalloc(&listenSock, 1));
+  NCCLCHECK(ncclSocketInit(listenSock, &handle->addr, handle->magic, ncclSocketTypeBootstrap, NULL, 0));
+  NCCLCHECK(ncclSocketListen(listenSock));
+  NCCLCHECK(ncclSocketGetAddr(listenSock, &handle->addr));
+
+  NCCLCHECK(ncclCalloc(&args, 1));
+  args->listenSock = listenSock;
+  args->magic = handle->magic;
+  NEQCHECK(pthread_create(&thread, NULL, bootstrapRoot, (void*)args), 0);
+  ncclSetThreadName(thread, "NCCL BootstrapR");
+  NEQCHECK(pthread_detach(thread), 0); // will not be pthread_join()'d
+  return ncclSuccess;
+}
+```
+
+这个函数启动了一个新线程 `bootstrapRoot`，在后台等待与其它 node 通信。首先等待其它 node 向它发送各自的地址，保存在 `rankAddresses/rankAddressesRoot` 中。当接收所有 node 之后，将 ring AllGather 中的下一个地址发送给各个 node。（`rankAddresses/rankAddressesRoot` 对应两个 socket，一个用于和 root 通信，一个用于 ring）
+
+在 `ncclCommInitRankDev -> ncclCommInitRankFunc` 中，在 `commAlloc` 之后会执行 `bootstrapInit` 函数。这个函数用于构建 bootstrap 网络。有若干步骤：
+
+1. 向 root 发送自身地址；
+2. 接收 root 发送的 ring 中 next node 的地址；
+3. 通过 AllGather 获得所有地址，放入 `peerCommAddresses` ；
+4. 建立服务代理等等（这些还不清楚用来干什么）
+

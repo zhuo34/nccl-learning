@@ -23,8 +23,10 @@ ncclResult_t ncclInitKernelsForDevice(int cudaArch, size_t* maxStackSize) {
   ncclResult_t result = ncclSuccess;
 
   if (maxStackSize) *maxStackSize = 0;
+  // 加载 L1 cache 大小
   int carveout = ncclParamL1SharedMemoryCarveout();
 
+  // 遍历 ncclDevKernelList 的所有 kernel，获得最大栈空间，并设置 L1 和 share memory 大小
   for (int k=0; k < ncclDevKernelCount; k++) {
     void* fn = ncclDevKernelList[k];
     if (fn == nullptr) continue;

@@ -106,6 +106,9 @@ NCCL_API(ncclResult_t, ncclGetUniqueId, ncclUniqueId* out);
 ncclResult_t ncclGetUniqueId(ncclUniqueId* out) {
   NCCLCHECK(ncclInit());
   NCCLCHECK(PtrCheck(out, "GetUniqueId", "out"));
+  // ncclUniqueId 是一个 128 字节的空间，语义上就是一个 ncclBootstrapHandle
+  // ncclBootstrapHandle 包含了 bootstrap 网络的地址
+  // ncclUniqueId 在被分发到各个 node 后，就是 root 的 bootstrap 地址，用于各 node 通信
   ncclResult_t res = bootstrapGetUniqueId((struct ncclBootstrapHandle*)out);
   TRACE_CALL("ncclGetUniqueId(0x%llx)", (unsigned long long)hashUniqueId(*out));
   return res;
@@ -1375,6 +1378,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   cudaArch = 100*archMajor + 10*archMinor;
 
   timers[TIMER_INIT_KERNELS] = clockNano();
+  // 获得 ncclDevKernelList 中 kernel 的栈的最大空间
   NCCLCHECK(ncclInitKernelsForDevice(cudaArch, &maxLocalSizeBytes));
   // Set the maximum kernel stack size of all kernels to avoid
   // a CUDA memory reconfig on load (c.f. NVSHMEM issue)
@@ -1394,7 +1398,9 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     NCCLCHECKGOTO(commAlloc(comm, job->parent, job->nranks, job->myrank), res, fail);
     NCCLCHECKGOTO(bootstrapSplit((struct ncclBootstrapHandle*)&job->commId, comm, job->parent, job->color, job->key, parentRanks), res, fail);
   } else {
+    // commAlloc 初始化 comm
     NCCLCHECKGOTO(commAlloc(comm, NULL, job->nranks, job->myrank), res, fail);
+    // commId 就是 root 的 bootstrap 地址
     NCCLCHECKGOTO(bootstrapInit((struct ncclBootstrapHandle*)&job->commId, comm), res, fail);
   }
   timers[TIMER_INIT_BOOTSTRAP] = clockNano() - timers[TIMER_INIT_BOOTSTRAP];
@@ -1636,6 +1642,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, ncclUni
     NCCLCHECKGOTO(bootstrapCreateRoot((struct ncclBootstrapHandle*)&commId, true), res, fail);
   }
 
+  // 不执行 ncclUniqueId 的其它 node 在这里 ncclInit
   NCCLCHECKGOTO(ncclInit(), res, fail);
   if (ncclDebugLevel > NCCL_LOG_WARN || (ncclDebugLevel != NCCL_LOG_NONE && myrank == 0)) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;

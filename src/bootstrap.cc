@@ -300,6 +300,7 @@ ncclResult_t bootstrapInit(struct ncclBootstrapHandle* handle, struct ncclComm* 
   NCCLCHECK(ncclSocketInit(&state->ringRecvSocket));
   NCCLCHECK(ncclSocketAccept(&state->ringRecvSocket, &state->listenSock));
 
+  // 通过 AllGather 获得所有地址，放入 peerCommAddresses 中
   // AllGather all listen handlers
   NCCLCHECK(ncclCalloc(&state->peerCommAddresses, nranks));
   NCCLCHECK(ncclSocketGetAddr(&state->listenSock, state->peerCommAddresses+rank));
