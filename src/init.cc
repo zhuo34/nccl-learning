@@ -334,7 +334,16 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   comm->rank = rank;
   comm->nRanks = ndev;
 
+  // src/net.cc
+  // 全局变量 ncclNet_t* ncclNets[3] = { nullptr, &ncclNetIb, &ncclNetSocket };
+  // 全局变量 ncclCollNet_t* ncclCollNets[3] = { nullptr, nullptr, nullptr };
+  // ncclNet_t 是个结构，里面包含了一个 name 和若干函数指针
+  // ncclNetIb 和 ncclNetSocket 对应 IB/Ethernet，分别定义在 src/transport/net_ib.cc 和 src/transport/net_socket.cc 中
+  // 目前只有 libnccl-net.so 对应 ncclCollNets[0]，IB/Ethernet 没有对应的 ncclCollNets
+
+  // 尝试打开 libnccl-net.so，并放入 ncclNets[0] 和 ncclCollNets[0]
   NCCLCHECK(ncclNetPluginLoad(comm));
+  // 按顺序尝试 init ncclNets，如果成功，赋值给 comm->ncclNet 和 comm->ncclCollNet
   NCCLCHECK(ncclNetInit(comm));
   INFO(NCCL_INIT, "Using network %s", comm->ncclNet->name);
 
@@ -761,6 +770,9 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   do {
     // Compute intra-process ranks
+    // intraProcRank0: 同一进程第一个 device 的 rank
+    // intraProcRank: 本 device 在当前进程的 rank
+    // intraProcRanks: 当前进程 device 数量
     int intraProcRank0 = -1, intraProcRank = -1, intraProcRanks = 0;
     for (int i = 0; i < nranks; i++) comm->minCompCap = std::min(comm->minCompCap, comm->peerInfo[i].cudaCompCap);
     for (int i = 0; i < nranks; i++) comm->maxCompCap = std::max(comm->maxCompCap, comm->peerInfo[i].cudaCompCap);
@@ -774,6 +786,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
         if (i == rank) intraProcRank = intraProcRanks;
         intraProcRanks++;
         if (intraProcRank0 == rank && rank != i) {
+          // 将同一个进程的 comm 放入 intraProcRank0 的链表 comm->intraNext
           comm->peerInfo[i].comm->intraNext = comm->intraNext;
           comm->intraNext = comm->peerInfo[i].comm;
         }
@@ -804,6 +817,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     }
     struct ncclComm* comm0 = comm->peerInfo[intraProcRank0].comm;
     assert(intraProcRank==0 ? comm==comm0 : true);
+    // intra 前缀代表同一个进程内
     comm->intraComm0 = comm0;
     comm->intraRank = intraProcRank;
     comm->intraRanks = intraProcRanks;
@@ -814,6 +828,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   timers[TIMER_INIT_TOPO] = clockNano();
   // Topo detection / System graph creation
+  // NCCL_TOPO_FILE，否则 "/var/run/nvidia-topologyd/virtualTopology.xml"
   NCCLCHECKGOTO(ncclTopoGetSystem(comm, &comm->topo), ret, fail);
   // Compute paths between GPUs and NICs
   NCCLCHECKGOTO(ncclTopoComputePaths(comm->topo, comm), ret, fail);

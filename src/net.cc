@@ -432,6 +432,7 @@ ncclResult_t ncclNetPluginLoad(struct ncclComm* comm) {
     goto exit;
   }
 
+  // 尝试打开环境变量 NCCL_NET_PLUGIN 的库，否则尝试打开 libnccl-net.so
   netPluginLib = openNetPluginLib(couldNotFindNames, MAX_PLUGIN_LOAD * PATH_MAX);
   if (netPluginLib == nullptr) {
     if (strlen(couldNotFindNames)) {
